@@ -1,0 +1,10 @@
+node_modules/
+dist/
+.vercel/
+.openai/
+.env
+.env.*
+*.local
+*.log
+*.tsbuildinfo
+.DS_Store
