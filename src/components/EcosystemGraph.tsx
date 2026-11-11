@@ -1,7 +1,9 @@
 import { memo, useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from 'react';
 import { Background, BackgroundVariant, Handle, MarkerType, Position, ReactFlow, type Edge, type Node, type NodeProps, type ReactFlowInstance } from '@xyflow/react';
+import { Minus, Plus } from 'lucide-react';
 import '@xyflow/react/dist/style.css';
 import { EDGE_LABELS, ROUTE_COLORS, SOURCE_COLORS, SOURCE_LABELS, matches, type AtlasData, type AtlasNode, type EdgeKind } from '../model';
+import { GRAPH_NODE_GEOMETRY } from './graphGeometry';
 import './graph.css';
 
 interface Props {
@@ -22,7 +24,7 @@ const EDGE_STYLES: Record<EdgeKind, { color: string; dash?: string }> = {
 };
 
 const AtlasGraphNode = memo(function AtlasGraphNode({ data, selected }: NodeProps<GraphNode>) {
-  return <div className={`atlas-flow-card${selected ? ' is-selected' : ''}${data.connected ? ' is-connected' : ''}${data.dimmed ? ' is-dimmed' : ''}`} style={{ '--node-color': SOURCE_COLORS[data.node.status.source] } as CSSProperties}>
+  return <div className={`atlas-flow-card${selected ? ' is-selected' : ''}${data.connected ? ' is-connected' : ''}${data.dimmed ? ' is-dimmed' : ''}`} style={{ width: GRAPH_NODE_GEOMETRY.width, height: GRAPH_NODE_GEOMETRY.height, '--node-color': SOURCE_COLORS[data.node.status.source] } as CSSProperties}>
     <Handle type="target" position={Position.Left} isConnectable={false} />
     <button className="atlas-node-button nodrag" onClick={() => data.open(data.node.id)} aria-label={`${data.node.label}，${SOURCE_LABELS[data.node.status.source]}，查看详情`}>
       <span className="atlas-node-eyebrow">{data.layerLabel}</span>
@@ -116,6 +118,7 @@ export function EcosystemGraph({ data, routeId, search, sourceFilter, selectedNo
     return positions;
   }, [data.layers, visible.nodes, route]);
   const flowNodes: GraphNode[] = useMemo(() => visible.nodes.map(node => ({
+    ...GRAPH_NODE_GEOMETRY,
     id: node.id, type: 'atlas', position: layout.get(node.id) ?? { x: 0, y: 0 },
     selected: node.id === selectedNodeId, draggable: false,
     ariaLabel: node.label, focusable: false,
@@ -165,9 +168,9 @@ export function EcosystemGraph({ data, routeId, search, sourceFilter, selectedNo
             <Background variant={BackgroundVariant.Dots} gap={22} size={1} color="var(--line)" />
           </ReactFlow>
           <div className="atlas-canvas-controls" role="group" aria-label="画布缩放">
-            <button aria-label="放大图谱" onClick={() => void flowRef.current?.zoomIn({ duration: 0 })}>+</button>
+            <button aria-label="放大图谱" onClick={() => void flowRef.current?.zoomIn({ duration: 0 })}><Plus size={16} aria-hidden="true" /></button>
             <span aria-live="off">{zoom}%</span>
-            <button aria-label="缩小图谱" onClick={() => void flowRef.current?.zoomOut({ duration: 0 })}>−</button>
+            <button aria-label="缩小图谱" onClick={() => void flowRef.current?.zoomOut({ duration: 0 })}><Minus size={16} aria-hidden="true" /></button>
             <button className="atlas-fit-button" onClick={fit}>适应画布</button>
           </div>
           <div className="atlas-canvas-hint">拖动画布 · 双指缩放 · 点选节点查看证据</div>
