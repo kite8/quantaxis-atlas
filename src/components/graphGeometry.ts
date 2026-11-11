@@ -1,5 +1,5 @@
-const width = 218;
-const height = 144;
+const width = 244;
+const height = 180;
 
 // Keep React Flow's measured geometry when interaction state rebuilds a node.
 // The card's rendered border-box must use these same dimensions.

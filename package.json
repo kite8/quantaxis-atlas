@@ -7,7 +7,7 @@
   "scripts": {
     "dev": "vite --host 0.0.0.0",
     "build": "tsc -b && npm run test:graph && node scripts/check-data.mjs && vite build",
-    "test:graph": "node --experimental-strip-types --test scripts/graph-geometry.test.mjs",
+    "test:graph": "node --experimental-strip-types --test scripts/graph-geometry.test.mjs scripts/relationships.test.mjs",
     "preview": "vite preview --host 127.0.0.1",
     "check": "tsc -b && node scripts/check-data.mjs"
   },
