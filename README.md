@@ -2,6 +2,8 @@
 
 以职责、能力线路与固定源码证据浏览 QUANTAXIS 生态的独立研究网站。包含项目索引、关键历史事件、PDF能力映射，以及结构化数据下载。
 
+[在线浏览](https://quantaxis-atlas.vercel.app/) · [结构化数据](https://quantaxis-atlas.vercel.app/data/atlas.json)
+
 ## 本地运行
 
 需要Node.js 22.12或更高版本。
@@ -51,6 +53,8 @@ node scripts/query.mjs --gaps
 
 界面使用React、TypeScript、Vite和React Flow。修改 `src/` 调整界面，修改 `public/data/` 更新数据。`npm run build` 会检查TypeScript、跨集合引用、固定源码链接和公开数据边界。
 
-Vercel导入此GitHub仓库后使用Vite预设，构建命令为 `npm run build`，输出目录为 `dist`。不需要配置环境变量。后续向默认分支提交即可触发关联部署。
+Vercel关联此GitHub仓库后使用Vite预设，构建命令为 `npm run build`，输出目录为 `dist`，生产分支为 `main`。不需要配置环境变量。后续向 `main` 推送提交即可触发关联部署。
+
+推送后，在Vercel部署记录中确认来源分支为 `main`、提交SHA与GitHub最新提交一致且状态为 `Ready`，再打开网站和 `/data/atlas.json` 检查访问结果。
 
 本网站为独立生态研究项目，非QUANTAXIS官方站点。各上游项目、协议和产品名称归原项目所有者；实际使用以对应上游代码、许可证及说明为准。
