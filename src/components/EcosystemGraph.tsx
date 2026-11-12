@@ -1,10 +1,13 @@
-import { memo, useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from 'react';
+import { memo, useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type PointerEvent } from 'react';
 import { Background, BackgroundVariant, Handle, MarkerType, Position, ReactFlow, type Edge, type Node, type NodeProps, type ReactFlowInstance } from '@xyflow/react';
 import { ArrowUpRight, BookOpen, LayoutGrid, Minus, Network, Plus } from 'lucide-react';
 import '@xyflow/react/dist/style.css';
 import { EDGE_LABELS, ROUTE_COLORS, SOURCE_COLORS, SOURCE_LABELS, matches, type AtlasData, type AtlasNode, type EdgeKind } from '../model';
 import { GRAPH_NODE_GEOMETRY } from './graphGeometry';
 import { NodeRelations } from './NodeRelations';
+import { CanvasStage, type CanvasLayout } from './CanvasStage';
+import { canPreviewPointer, resolveGraphHighlight, type GraphPreview } from './graphInteraction';
+import { getGraphPositions, resizeViewport } from './graphLayout';
 import { getFocusNodeId, getGraphScope } from './relationshipModel';
 import './graph.css';
 
@@ -14,13 +17,14 @@ interface Props {
   search: string;
   sourceFilter: string;
   selectedNodeId: string | null;
+  detailOpen: boolean;
   onFocusNode: (id: string) => void;
   onOpenNode: (id: string) => void;
   onOpenEdge: (id: string) => void;
   onResetFilters: () => void;
   onBack?: () => void;
 }
-type GraphNodeData = { node: AtlasNode; layerLabel: string; dimmed: boolean; connected: boolean; open: (id: string) => void };
+type GraphNodeData = { node: AtlasNode; layerLabel: string; dimmed: boolean; connected: boolean; previewed: boolean; open: (id: string) => void };
 type GraphNode = Node<GraphNodeData, 'atlas'>;
 const EDGE_STYLES: Record<EdgeKind, { color: string; dash?: string }> = {
   calls: { color: '#278776' }, data: { color: '#527bc0' },
@@ -29,24 +33,28 @@ const EDGE_STYLES: Record<EdgeKind, { color: string; dash?: string }> = {
 };
 
 const AtlasGraphNode = memo(function AtlasGraphNode({ data, selected }: NodeProps<GraphNode>) {
-  return <div className={`atlas-flow-card${selected ? ' is-selected' : ''}${data.connected ? ' is-connected' : ''}${data.dimmed ? ' is-dimmed' : ''}`} style={{ width: GRAPH_NODE_GEOMETRY.width, height: GRAPH_NODE_GEOMETRY.height, '--node-color': SOURCE_COLORS[data.node.status.source] } as CSSProperties}>
+  return <div className={`atlas-flow-card${selected ? ' is-selected' : ''}${data.connected ? ' is-connected' : ''}${data.previewed ? ' is-previewed' : ''}${data.dimmed ? ' is-dimmed' : ''}`} style={{ width: GRAPH_NODE_GEOMETRY.width, height: GRAPH_NODE_GEOMETRY.height, '--node-color': SOURCE_COLORS[data.node.status.source] } as CSSProperties}>
     <Handle type="target" position={Position.Left} isConnectable={false} />
     <button className="atlas-node-button nodrag nopan" onClick={event => { event.stopPropagation(); data.open(data.node.id); }} aria-pressed={selected} aria-label={`${data.node.label}，${SOURCE_LABELS[data.node.status.source]}，选中并高亮关系`}>
       <span className="atlas-node-eyebrow">{data.layerLabel}</span>
       <strong>{data.node.label}</strong>
       <span className="atlas-node-role">{data.node.role}</span>
-      <span className="atlas-node-status"><i />{SOURCE_LABELS[data.node.status.source]}<span>{selected ? '已选中' : '点选'}</span></span>
+      <span className="atlas-node-status"><i />{SOURCE_LABELS[data.node.status.source]}<span>{selected ? '已选中' : data.previewed ? '预览中' : '点选'}</span></span>
     </button>
     <Handle type="source" position={Position.Right} isConnectable={false} />
   </div>;
 });
 const NODE_TYPES = { atlas: AtlasGraphNode };
 
-export function EcosystemGraph({ data, routeId, search, sourceFilter, selectedNodeId, onFocusNode, onOpenNode, onOpenEdge, onResetFilters, onBack }: Props) {
+export function EcosystemGraph({ data, routeId, search, sourceFilter, selectedNodeId, detailOpen, onFocusNode, onOpenNode, onOpenEdge, onResetFilters, onBack }: Props) {
   const hostRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLDivElement>(null);
   const flowRef = useRef<ReactFlowInstance<GraphNode, Edge> | null>(null);
   const [mode, setMode] = useState<'relations' | 'canvas' | 'cards'>('relations');
+  const [canvasLayout, setCanvasLayout] = useState<CanvasLayout>(() => window.matchMedia('(max-width: 600px) and (orientation: portrait)').matches ? 'vertical' : 'horizontal');
+  const [hoverCapable, setHoverCapable] = useState(() => window.matchMedia('(any-hover: hover) and (any-pointer: fine)').matches);
+  const [preview, setPreview] = useState<GraphPreview>(null);
+  const previousLayout = useRef(canvasLayout);
   const [zoom, setZoom] = useState(100);
   const scope = useMemo(() => getGraphScope(data, routeId), [data, routeId]);
   const route = scope.route;
@@ -65,6 +73,26 @@ export function EcosystemGraph({ data, routeId, search, sourceFilter, selectedNo
     return { nodes, edges };
   }, [candidates, scope.edges, mode, route, hasFilters, focusId]);
   const visibleKey = visible.nodes.map(node => node.id).join('|') + '/' + visible.edges.map(edge => edge.id).join('|');
+  const highlight = useMemo(() => resolveGraphHighlight(visible.nodes, visible.edges, focusId, preview, hoverCapable), [visible, focusId, preview, hoverCapable]);
+  const connected = highlight.connectedIds;
+  const focusedNode = highlight.nodeId;
+  const layout = useMemo(() => getGraphPositions(visible.nodes, data.layers, route, canvasLayout), [visible.nodes, data.layers, route, canvasLayout]);
+
+  useEffect(() => {
+    const media = window.matchMedia('(any-hover: hover) and (any-pointer: fine)');
+    const change = () => { setHoverCapable(media.matches); setPreview(null); };
+    media.addEventListener('change', change);
+    return () => media.removeEventListener('change', change);
+  }, []);
+  const clearPreview = useCallback(() => setPreview(null), []);
+  const previewPointer = (event: PointerEvent<HTMLDivElement>) => {
+    if (!canPreviewPointer(event, hoverCapable)) { clearPreview(); return; }
+    const target = event.target instanceof Element ? event.target : null;
+    const item = target?.closest<HTMLElement>('.react-flow__node[data-id], .react-flow__edge[data-id]');
+    const id = item?.dataset.id;
+    const next: GraphPreview = item && id ? { kind: item.classList.contains('react-flow__node') ? 'node' : 'edge', id } : null;
+    setPreview(previous => previous?.kind === next?.kind && previous?.id === next?.id ? previous : next);
+  };
 
   const fit = useCallback(() => {
     const flow = flowRef.current;
@@ -74,23 +102,52 @@ export function EcosystemGraph({ data, routeId, search, sourceFilter, selectedNo
     });
   }, []);
   useEffect(() => {
-    if (mode !== 'canvas' || !canvasRef.current) return;
+    if (mode !== 'canvas') return;
+    clearPreview();
+    const frame = requestAnimationFrame(fit);
+    return () => cancelAnimationFrame(frame);
+  }, [mode, visibleKey, fit, clearPreview]);
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    if (mode !== 'canvas' || !canvas) return;
+    let previousSize = { width: canvas.clientWidth, height: canvas.clientHeight };
     let frame = 0;
-    const schedule = () => { cancelAnimationFrame(frame); frame = requestAnimationFrame(fit); };
+    const schedule = () => {
+      cancelAnimationFrame(frame);
+      frame = requestAnimationFrame(() => {
+        const nextSize = { width: canvas.clientWidth, height: canvas.clientHeight };
+        const flow = flowRef.current;
+        if (flow && (previousSize.width !== nextSize.width || previousSize.height !== nextSize.height)) {
+          void flow.setViewport(resizeViewport(flow.getViewport(), previousSize, nextSize), { duration: 0 });
+        }
+        previousSize = nextSize;
+      });
+    };
     const observer = new ResizeObserver(schedule);
-    observer.observe(canvasRef.current);
-    schedule();
+    observer.observe(canvas);
     return () => { cancelAnimationFrame(frame); observer.disconnect(); };
-  }, [mode, visibleKey, fit]);
+  }, [mode]);
+  useEffect(() => {
+    if (previousLayout.current === canvasLayout) return;
+    previousLayout.current = canvasLayout;
+    clearPreview();
+    if (mode !== 'canvas') return;
+    const frame = requestAnimationFrame(() => {
+      const position = focusId ? layout.get(focusId) : undefined;
+      const flow = flowRef.current;
+      if (position && flow) void flow.setCenter(position.x + GRAPH_NODE_GEOMETRY.width / 2,
+        position.y + GRAPH_NODE_GEOMETRY.height / 2, { zoom: flow.getZoom(), duration: 0 });
+    });
+    return () => cancelAnimationFrame(frame);
+  }, [canvasLayout, mode, focusId, layout, clearPreview]);
 
-  const selectNode = onFocusNode;
+  const selectNode = useCallback((id: string) => { clearPreview(); onFocusNode(id); }, [clearPreview, onFocusNode]);
   const readRelations = (id: string) => {
     selectNode(id);
     setMode('relations');
     requestAnimationFrame(() => hostRef.current?.scrollIntoView({ block: 'start', behavior: 'instant' }));
   };
   const selectEdge = onOpenEdge;
-  const focusedNode = focusId;
   const readAtFullSize = () => {
     const flow = flowRef.current;
     if (!flow) return;
@@ -98,44 +155,16 @@ export function EcosystemGraph({ data, routeId, search, sourceFilter, selectedNo
     if (node) void flow.setCenter(node.position.x + GRAPH_NODE_GEOMETRY.width / 2,
       node.position.y + GRAPH_NODE_GEOMETRY.height / 2, { zoom: 1, duration: 0 });
   };
-  const connected = useMemo(() => {
-    const ids = new Set<string>();
-    if (focusedNode && visible.nodes.some(node => node.id === focusedNode)) {
-      ids.add(focusedNode);
-      visible.edges.forEach(edge => { if (edge.source === focusedNode || edge.target === focusedNode) { ids.add(edge.source); ids.add(edge.target); } });
-    }
-    return ids;
-  }, [focusedNode, visible]);
-  const layout = useMemo(() => {
-    const positions = new Map<string, { x: number; y: number }>();
-    if (route) {
-      const orderedIds = [...new Set([...route.steps.map(step => step.nodeId), ...route.nodeIds])];
-      orderedIds.filter(id => visible.nodes.some(node => node.id === id)).forEach((id, index) => {
-        positions.set(id, { x: (index % 4) * (GRAPH_NODE_GEOMETRY.width + 64), y: Math.floor(index / 4) * (GRAPH_NODE_GEOMETRY.height + 52) });
-      });
-    } else {
-      const groups = data.layers.map(layer => visible.nodes.filter(node => node.layer === layer.id)).filter(nodes => nodes.length);
-      let rowY = 0;
-      for (let groupRow = 0; groupRow < Math.ceil(groups.length / 3); groupRow++) {
-        const rowGroups = groups.slice(groupRow * 3, groupRow * 3 + 3);
-        const columnWidth = GRAPH_NODE_GEOMETRY.width + 30;
-        const rowHeight = GRAPH_NODE_GEOMETRY.height + 30;
-        rowGroups.forEach((nodes, column) => nodes.forEach((node, index) => positions.set(node.id, { x: column * (columnWidth * 2 + 28) + (index % 2) * columnWidth, y: rowY + Math.floor(index / 2) * rowHeight })));
-        rowY += Math.max(...rowGroups.map(nodes => Math.ceil(nodes.length / 2))) * rowHeight + 62;
-      }
-    }
-    return positions;
-  }, [data.layers, visible.nodes, route]);
   const flowNodes: GraphNode[] = useMemo(() => visible.nodes.map(node => ({
     ...GRAPH_NODE_GEOMETRY,
     id: node.id, type: 'atlas', position: layout.get(node.id) ?? { x: 0, y: 0 },
     selected: node.id === focusId, draggable: false,
     ariaLabel: node.label, focusable: false,
     data: { node, layerLabel: data.layers.find(layer => layer.id === node.layer)?.label ?? node.layer,
-      dimmed: connected.size > 0 && !connected.has(node.id), connected: connected.has(node.id), open: selectNode },
-  })), [visible.nodes, layout, focusId, data.layers, connected, selectNode]);
+      dimmed: connected.size > 0 && !connected.has(node.id), connected: connected.has(node.id), previewed: hoverCapable && preview?.kind === 'node' && preview.id === node.id, open: selectNode },
+  })), [visible.nodes, layout, focusId, data.layers, connected, selectNode, hoverCapable, preview]);
   const flowEdges: Edge[] = useMemo(() => visible.edges.map(edge => {
-    const active = edge.source === focusedNode || edge.target === focusedNode;
+    const active = edge.id === highlight.edgeId || edge.source === focusedNode || edge.target === focusedNode;
     const style = EDGE_STYLES[edge.kind];
     const color = active ? routeColor ?? style.color : style.color;
     return { id: edge.id, source: edge.source, target: edge.target, type: 'default',
@@ -147,7 +176,7 @@ export function EcosystemGraph({ data, routeId, search, sourceFilter, selectedNo
       label: active ? edge.label : undefined,
       labelStyle: { fill: 'var(--ink)', fontSize: 14 }, labelBgStyle: { fill: 'var(--surface)' }, labelBgPadding: [7, 4] as [number, number],
     };
-  }), [visible.edges, focusedNode, routeColor, nodeIndex, connected, selectEdge]);
+  }), [visible.edges, focusedNode, highlight.edgeId, routeColor, nodeIndex, connected, selectEdge]);
   const cardGroups = route ? [{ id: route.id, label: '沿研究路径阅读', description: '以下顺序用于讲解；实际关系以关系列表和图中连线为准。', nodes: [...new Set([...route.steps.map(step => step.nodeId), ...route.nodeIds])].flatMap(id => { const node = visible.nodes.find(item => item.id === id); return node ? [node] : []; }) }]
     : data.layers.map(layer => ({ ...layer, nodes: visible.nodes.filter(node => node.layer === layer.id) })).filter(group => group.nodes.length);
 
@@ -166,8 +195,9 @@ export function EcosystemGraph({ data, routeId, search, sourceFilter, selectedNo
       onBack={onBack} />
       : visible.nodes.length === 0 ? <div className="atlas-empty"><span aria-hidden="true">⌕</span><h3>没有符合条件的组件</h3><p>试试其他关键词，或将源码状态切换为「所有来源状态」。当前路线也会限定搜索范围。</p><button className="button secondary" onClick={onResetFilters}>清除筛选</button></div>
       : mode === 'canvas' ? <>
-        <p className="atlas-canvas-note">点选组件后保持高亮，再通过下方按钮阅读完整关系。{!route && !hasFilters ? `当前为总览组件；全部 ${scope.nodes.length} 个组件可在关系阅读和组件目录中查看。` : '画布只展示当前筛选范围内的组件与连线。'}</p>
-        <div className="atlas-canvas" ref={canvasRef} aria-label="可缩放的生态关系图">
+        <p className="atlas-canvas-note">{hoverCapable ? '悬停预览关联，点击锁定组件；画布内滚轮上滑放大、下滑缩小。' : '点选组件后保持高亮，拖动平移、双指缩放；可进入专注画布切换横竖屏。'}{!route && !hasFilters ? `当前为总览组件；全部 ${scope.nodes.length} 个组件可在关系阅读和组件目录中查看。` : '画布只展示当前筛选范围内的组件与连线。'}</p>
+        <CanvasStage layout={canvasLayout} onLayoutChange={setCanvasLayout} detailOpen={detailOpen}>
+        <div className="atlas-canvas" ref={canvasRef} aria-label="可缩放的生态关系图" onPointerMove={previewPointer} onPointerOver={previewPointer} onPointerLeave={clearPreview} onPointerDown={clearPreview} onPointerCancel={clearPreview}>
           <ReactFlow<GraphNode, Edge>
             nodes={flowNodes} edges={flowEdges} nodeTypes={NODE_TYPES}
             onInit={instance => { flowRef.current = instance; requestAnimationFrame(fit); }}
@@ -176,8 +206,8 @@ export function EcosystemGraph({ data, routeId, search, sourceFilter, selectedNo
             onEdgeClick={(_, edge) => selectEdge(edge.id)}
             nodesDraggable={false} nodesConnectable={false} elementsSelectable={false}
             minZoom={0.12} maxZoom={1.8} fitView fitViewOptions={{ padding: 0.08, maxZoom: 1 }}
-            deleteKeyCode={null} panOnScroll={false} zoomOnScroll={false} zoomOnPinch
-            preventScrolling={false} attributionPosition="bottom-right"
+            deleteKeyCode={null} panOnScroll={false} zoomOnScroll zoomOnPinch
+            preventScrolling attributionPosition="bottom-right"
           >
             <Background variant={BackgroundVariant.Dots} gap={22} size={1} color="var(--line)" />
           </ReactFlow>
@@ -188,11 +218,12 @@ export function EcosystemGraph({ data, routeId, search, sourceFilter, selectedNo
             <button className="atlas-fit-button" onClick={readAtFullSize}>100% 字号</button>
             <button className="atlas-fit-button" onClick={fit}>适应画布</button>
           </div>
-          <div className="atlas-canvas-hint">拖动平移 · 双指缩放 · 点选后保持高亮</div>
+          <div className="atlas-canvas-hint">{hoverCapable ? '悬停预览 · 点击锁定 · 滚轮缩放 · 拖动平移' : '点选锁定 · 拖动平移 · 双指缩放'}</div>
         </div>
         {currentNode && <div className="atlas-canvas-selection"><div><span>当前组件</span><strong>{currentNode.label}</strong><p>{visible.nodes.some(node => node.id === focusId)
           ? `${visible.edges.filter(edge => edge.source === focusId || edge.target === focusId).length} 条关系在画布中可见；完整关联可进入关系阅读。`
           : '当前组件不在画布筛选结果中，仍保留你的阅读位置。'}</p></div><div className="atlas-canvas-selection-actions"><button onClick={() => readRelations(currentNode.id)}><BookOpen size={17} aria-hidden="true" />阅读该组件的关系</button><button onClick={() => onOpenNode(currentNode.id)}>组件详情<ArrowUpRight size={17} aria-hidden="true" /></button></div></div>}
+        </CanvasStage>
       </> : <div className="atlas-card-view">
         <p className="atlas-card-note">按职责与研究路线查找组件。选择一张卡片，进入该组件的关系阅读；关系数量按当前路线范围统计。</p>
         {cardGroups.map(group => <section key={group.id} className="atlas-card-group">
