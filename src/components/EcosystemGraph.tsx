@@ -1,5 +1,5 @@
 import { memo, useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type PointerEvent } from 'react';
-import { Background, BackgroundVariant, Handle, MarkerType, Position, ReactFlow, type Edge, type Node, type NodeProps, type ReactFlowInstance } from '@xyflow/react';
+import { Background, BackgroundVariant, Handle, MarkerType, Position, ReactFlow, type Node, type NodeProps, type ReactFlowInstance } from '@xyflow/react';
 import { ArrowUpRight, BookOpen, LayoutGrid, Minus, Network, Plus } from 'lucide-react';
 import '@xyflow/react/dist/style.css';
 import { EDGE_LABELS, ROUTE_COLORS, SOURCE_COLORS, SOURCE_LABELS, matches, type AtlasData, type AtlasNode, type EdgeKind } from '../model';
@@ -9,6 +9,8 @@ import { CanvasStage, type CanvasLayout } from './CanvasStage';
 import { canPreviewPointer, resolveGraphHighlight, type GraphPreview } from './graphInteraction';
 import { getGraphPositions, resizeViewport } from './graphLayout';
 import { getFocusNodeId, getGraphScope } from './relationshipModel';
+import { AtlasGraphEdge, type AtlasFlowEdge } from './AtlasGraphEdge';
+import { getEdgeLabelPositions, getExpandedLabelBounds } from './edgeLabelLayout';
 import './graph.css';
 
 interface Props {
@@ -45,11 +47,12 @@ const AtlasGraphNode = memo(function AtlasGraphNode({ data, selected }: NodeProp
   </div>;
 });
 const NODE_TYPES = { atlas: AtlasGraphNode };
+const EDGE_TYPES = { atlas: AtlasGraphEdge };
 
 export function EcosystemGraph({ data, routeId, search, sourceFilter, selectedNodeId, detailOpen, onFocusNode, onOpenNode, onOpenEdge, onResetFilters, onBack }: Props) {
   const hostRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLDivElement>(null);
-  const flowRef = useRef<ReactFlowInstance<GraphNode, Edge> | null>(null);
+  const flowRef = useRef<ReactFlowInstance<GraphNode, AtlasFlowEdge> | null>(null);
   const [mode, setMode] = useState<'relations' | 'canvas' | 'cards'>('relations');
   const [canvasLayout, setCanvasLayout] = useState<CanvasLayout>(() => window.matchMedia('(max-width: 600px) and (orientation: portrait)').matches ? 'vertical' : 'horizontal');
   const [hoverCapable, setHoverCapable] = useState(() => window.matchMedia('(any-hover: hover) and (any-pointer: fine)').matches);
@@ -77,6 +80,7 @@ export function EcosystemGraph({ data, routeId, search, sourceFilter, selectedNo
   const connected = highlight.connectedIds;
   const focusedNode = highlight.nodeId;
   const layout = useMemo(() => getGraphPositions(visible.nodes, data.layers, route, canvasLayout), [visible.nodes, data.layers, route, canvasLayout]);
+  const edgeLabelPositions = useMemo(() => getEdgeLabelPositions(visible.nodes, visible.edges, layout), [visible.nodes, visible.edges, layout]);
 
   useEffect(() => {
     const media = window.matchMedia('(any-hover: hover) and (any-pointer: fine)');
@@ -88,8 +92,8 @@ export function EcosystemGraph({ data, routeId, search, sourceFilter, selectedNo
   const previewPointer = (event: PointerEvent<HTMLDivElement>) => {
     if (!canPreviewPointer(event, hoverCapable)) { clearPreview(); return; }
     const target = event.target instanceof Element ? event.target : null;
-    const item = target?.closest<HTMLElement>('.react-flow__node[data-id], .react-flow__edge[data-id]');
-    const id = item?.dataset.id;
+    const item = target?.closest<HTMLElement>('.react-flow__node[data-id], .react-flow__edge[data-id], [data-atlas-edge-id]');
+    const id = item?.dataset.atlasEdgeId ?? item?.dataset.id;
     const next: GraphPreview = item && id ? { kind: item.classList.contains('react-flow__node') ? 'node' : 'edge', id } : null;
     setPreview(previous => previous?.kind === next?.kind && previous?.id === next?.id ? previous : next);
   };
@@ -97,7 +101,16 @@ export function EcosystemGraph({ data, routeId, search, sourceFilter, selectedNo
   const fit = useCallback(() => {
     const flow = flowRef.current;
     if (!flow) return;
-    void flow.fitView({ padding: 0.08, minZoom: 0.12, maxZoom: 1, duration: 0 }).then(() => {
+    const nodes = flow.getNodes();
+    if (!nodes.length) return;
+    const labelBounds = getExpandedLabelBounds(flow.getNodesBounds(nodes), flow.getEdges().flatMap(edge => edge.data?.labelBox ? [edge.data.labelBox] : []));
+    const fitted = labelBounds ? flow.fitBounds(labelBounds, { padding: 0.08, duration: 0 })
+      : flow.fitView({ padding: 0.08, minZoom: 0.12, maxZoom: 1, duration: 0 });
+    void fitted.then(async () => {
+      if (flowRef.current !== flow) return;
+      if (labelBounds && flow.getZoom() > 1) {
+        await flow.setCenter(labelBounds.x + labelBounds.width / 2, labelBounds.y + labelBounds.height / 2, { zoom: 1, duration: 0 });
+      }
       if (flowRef.current === flow) setZoom(Math.round(flow.getZoom() * 100));
     });
   }, []);
@@ -163,20 +176,20 @@ export function EcosystemGraph({ data, routeId, search, sourceFilter, selectedNo
     data: { node, layerLabel: data.layers.find(layer => layer.id === node.layer)?.label ?? node.layer,
       dimmed: connected.size > 0 && !connected.has(node.id), connected: connected.has(node.id), previewed: hoverCapable && preview?.kind === 'node' && preview.id === node.id, open: selectNode },
   })), [visible.nodes, layout, focusId, data.layers, connected, selectNode, hoverCapable, preview]);
-  const flowEdges: Edge[] = useMemo(() => visible.edges.map(edge => {
+  const flowEdges: AtlasFlowEdge[] = useMemo(() => visible.edges.map(edge => {
     const active = edge.id === highlight.edgeId || edge.source === focusedNode || edge.target === focusedNode;
     const style = EDGE_STYLES[edge.kind];
     const color = active ? routeColor ?? style.color : style.color;
-    return { id: edge.id, source: edge.source, target: edge.target, type: 'default',
+    return { id: edge.id, source: edge.source, target: edge.target, type: 'atlas',
       focusable: true, interactionWidth: 24,
       domAttributes: { onKeyDown: event => { if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); selectEdge(edge.id); } } },
       ariaLabel: `${nodeIndex.get(edge.source)?.label} → ${nodeIndex.get(edge.target)?.label}：${EDGE_LABELS[edge.kind]}，${edge.label}`,
       markerEnd: { type: MarkerType.ArrowClosed, color, width: 15, height: 15 },
       style: { stroke: color, strokeWidth: active ? 2.7 : 1.5, strokeDasharray: style.dash, opacity: connected.size && !active ? 0.18 : 0.8 },
-      label: active ? edge.label : undefined,
-      labelStyle: { fill: 'var(--ink)', fontSize: 14 }, labelBgStyle: { fill: 'var(--surface)' }, labelBgPadding: [7, 4] as [number, number],
+      data: { label: edge.label, active, labelBox: edgeLabelPositions.get(edge.id), open: selectEdge,
+        accessibleLabel: `${nodeIndex.get(edge.source)?.label} → ${nodeIndex.get(edge.target)?.label}，${EDGE_LABELS[edge.kind]}，${edge.label}` },
     };
-  }), [visible.edges, focusedNode, highlight.edgeId, routeColor, nodeIndex, connected, selectEdge]);
+  }), [visible.edges, focusedNode, highlight.edgeId, routeColor, nodeIndex, connected, selectEdge, edgeLabelPositions]);
   const cardGroups = route ? [{ id: route.id, label: '沿研究路径阅读', description: '以下顺序用于讲解；实际关系以关系列表和图中连线为准。', nodes: [...new Set([...route.steps.map(step => step.nodeId), ...route.nodeIds])].flatMap(id => { const node = visible.nodes.find(item => item.id === id); return node ? [node] : []; }) }]
     : data.layers.map(layer => ({ ...layer, nodes: visible.nodes.filter(node => node.layer === layer.id) })).filter(group => group.nodes.length);
 
@@ -198,8 +211,8 @@ export function EcosystemGraph({ data, routeId, search, sourceFilter, selectedNo
         <p className="atlas-canvas-note">{hoverCapable ? '悬停预览关联，点击锁定组件；画布内滚轮上滑放大、下滑缩小。' : '点选组件后保持高亮，拖动平移、双指缩放；可进入专注画布切换横竖屏。'}{!route && !hasFilters ? `当前为总览组件；全部 ${scope.nodes.length} 个组件可在关系阅读和组件目录中查看。` : '画布只展示当前筛选范围内的组件与连线。'}</p>
         <CanvasStage layout={canvasLayout} onLayoutChange={setCanvasLayout} detailOpen={detailOpen}>
         <div className="atlas-canvas" ref={canvasRef} aria-label="可缩放的生态关系图" onPointerMove={previewPointer} onPointerOver={previewPointer} onPointerLeave={clearPreview} onPointerDown={clearPreview} onPointerCancel={clearPreview}>
-          <ReactFlow<GraphNode, Edge>
-            nodes={flowNodes} edges={flowEdges} nodeTypes={NODE_TYPES}
+          <ReactFlow<GraphNode, AtlasFlowEdge>
+            nodes={flowNodes} edges={flowEdges} nodeTypes={NODE_TYPES} edgeTypes={EDGE_TYPES}
             onInit={instance => { flowRef.current = instance; requestAnimationFrame(fit); }}
             onViewportChange={viewport => setZoom(Math.round(viewport.zoom * 100))}
             onNodeClick={(_, node) => selectNode(node.id)}

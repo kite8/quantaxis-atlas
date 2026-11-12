@@ -233,6 +233,18 @@ main{padding:30px 39px 24px;flex:1}
 to{transform:translateX(0);opacity:1}
 }
 
+@media(min-width:1101px){.sidebar{overflow-y:auto;overflow-x:hidden;overscroll-behavior-y:contain;scroll-padding-block:16px}
+.sidebar>*{flex-shrink:0}
+}
+
+@media(min-width:1101px) and (max-height:780px){.sidebar{padding-top:18px;padding-bottom:16px}
+.sidebar-section-label{margin-top:24px;margin-bottom:12px}
+.desktop-nav{gap:5px}
+.desktop-nav button{padding-top:10px;padding-bottom:10px}
+.sidebar-note{padding-top:20px;padding-bottom:14px}
+.sidebar-bottom{padding-top:12px}
+}
+
 @media(min-width:1600px){main{padding:35px 50px 30px}
 .topbar{padding:0 50px;gap:12px}
 .repo-grid{grid-template-columns:repeat(4,minmax(0,1fr))}
